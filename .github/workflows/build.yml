@@ -77,7 +77,9 @@ jobs:
           cp out/arch/arm64/boot/Image ak3/Image
           sed -i 's/^kernel.string=.*/kernel.string=Glade Kernel 6.6 (GKI) + KernelSU-Next/' ak3/anykernel.sh
           sed -i 's/^do.devicecheck=1/do.devicecheck=0/' ak3/anykernel.sh
-          sed -i 's/^block=.*/block=boot;/' ak3/anykernel.sh
+          sed -i 's|^BLOCK=.*|BLOCK=boot;|' ak3/anykernel.sh
+          sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=auto;|' ak3/anykernel.sh
+          grep -nE '^(BLOCK|IS_SLOT_DEVICE|do\.)' ak3/anykernel.sh
           (cd ak3 && zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . -x '*.git*')
           echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
           ls -lh "$ZIP_NAME"
