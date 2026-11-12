@@ -1,4 +1,4 @@
-name: Build GKI 6.6 + KSU Next
+name: Build Kernel (GKI 6.6 + KSU Next)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
       - '.github/workflows/**'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -26,8 +26,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bc bison build-essential ccache cpio curl flex \
-            dwarves g++-multilib gcc-multilib gperf git libelf-dev libssl-dev \
+          sudo apt-get install -y -qq bc bison build-essential cpio curl flex \
+            g++-multilib gcc-multilib gperf git libelf-dev libssl-dev \
             libncurses-dev libncurses5 libtinfo5 lz4 lzop pahole python3 rsync unzip wget xz-utils zip zstd
 
       - name: Cache LLVM 18
@@ -53,19 +53,40 @@ jobs:
       - name: Configure kernel
         run: |
           make O=out ARCH=arm64 LLVM=1 gki_defconfig
-          ./scripts/config --file out/.config -e KSU -d KSU_DEBUG
+          ./scripts/config --file out/.config -e KSU -d KSU_DEBUG -d KSU_SUSFS
+          make O=out ARCH=arm64 LLVM=1 olddefconfig
+          ./scripts/config --file out/.config -d KSU_SUSFS
           make O=out ARCH=arm64 LLVM=1 olddefconfig
           grep -E '^CONFIG_(KSU|LTO|CFI_CLANG)' out/.config || true
+          if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
+            echo "SUSFS still enabled, but kernel-side susfs patches are missing"; exit 1
+          fi
+          grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU not enabled"; exit 1; }
 
       - name: Build Image
         run: |
           make O=out ARCH=arm64 LLVM=1 -j"$(nproc)" Image
           ls -lh out/arch/arm64/boot/Image out/vmlinux
 
-      - name: Upload Image
+      - name: Package flashable zip (AnyKernel3)
+        run: |
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          ZIP_NAME="Glade-Kernel-cupid-6.6-KSU-${SHORT_SHA}.zip"
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
+          rm -rf ak3/.git ak3/.github ak3/README.md
+          cp out/arch/arm64/boot/Image ak3/Image
+          sed -i 's/^kernel.string=.*/kernel.string=Glade Kernel 6.6 (GKI) + KernelSU-Next/' ak3/anykernel.sh
+          sed -i 's/^do.devicecheck=1/do.devicecheck=0/' ak3/anykernel.sh
+          sed -i 's/^block=.*/block=boot;/' ak3/anykernel.sh
+          (cd ak3 && zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . -x '*.git*')
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          ls -lh "$ZIP_NAME"
+
+      - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
-          name: Image-gki-6.6-ksu
+          name: ${{ env.ZIP_NAME }}
           path: |
+            ${{ env.ZIP_NAME }}
             out/arch/arm64/boot/Image
             out/.config
