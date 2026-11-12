@@ -35,14 +35,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/clang
-          key: llvm-18.1.8-x86_64
+          key: llvm-18.1.8-ubuntu22
 
       - name: Download LLVM 18
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/clang"
           curl -fL -o "$RUNNER_TEMP/clang.tar.xz" \
-            https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+            https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
           tar -xJf "$RUNNER_TEMP/clang.tar.xz" -C "$RUNNER_TEMP/clang" --strip-components=1
 
       - name: Show toolchain
