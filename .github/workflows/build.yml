@@ -1,0 +1,71 @@
+name: Build GKI 6.6 + KSU Next
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'drivers/kernelsu/**'
+      - 'drivers/Kconfig'
+      - 'drivers/Makefile'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison build-essential ccache cpio curl flex \
+            dwarves g++-multilib gcc-multilib gperf git libelf-dev libssl-dev \
+            libncurses-dev lz4 lzop pahole python3 rsync unzip wget xz-utils zip zstd
+
+      - name: Cache LLVM 18
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/clang
+          key: llvm-18.1.8-x86_64
+
+      - name: Download LLVM 18
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/clang"
+          curl -fL -o "$RUNNER_TEMP/clang.tar.xz" \
+            https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+          tar -xJf "$RUNNER_TEMP/clang.tar.xz" -C "$RUNNER_TEMP/clang" --strip-components=1
+
+      - name: Show toolchain
+        run: |
+          echo "$RUNNER_TEMP/clang/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/clang/bin/clang" --version
+
+      - name: Configure kernel
+        run: |
+          make O=out ARCH=arm64 LLVM=1 gki_defconfig
+          ./scripts/config --file out/.config -e KSU -e KSU_SUSFS -d KSU_DEBUG -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT
+          make O=out ARCH=arm64 LLVM=1 olddefconfig
+          grep -E '^CONFIG_(KSU|LTO|CFI_CLANG)' out/.config || true
+
+      - name: Build Image
+        run: |
+          make O=out ARCH=arm64 LLVM=1 -j"$(nproc)" Image
+          ls -lh out/arch/arm64/boot/Image out/vmlinux
+
+      - name: Upload Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image-gki-6.6-ksu
+          path: |
+            out/arch/arm64/boot/Image
+            out/.config
