@@ -74,10 +74,10 @@ jobs:
       - name: Build Image
         run: |
           make O=out ARCH=arm64 LLVM=1 KCFLAGS="-D__ANDROID_COMMON_KERNEL__" -j"$(nproc)" Image
-          ls -lh out/arch/arm64/boot/Image out/vmlinux out/Module.symvers
+          ls -lh out/arch/arm64/boot/Image out/vmlinux out/vmlinux.symvers
           echo "kernelrelease=$(cat out/include/config/kernel.release)"
           echo "vermagic=$(cat out/include/generated/utsrelease.h)"
-          grep -c '^0x' out/Module.symvers | sed 's/^/exported_syms=/'
+          grep -c '^0x' out/vmlinux.symvers | sed 's/^/exported_syms=/'
           sha256sum out/arch/arm64/boot/Image
 
       - name: Package flashable zip (AnyKernel3)
