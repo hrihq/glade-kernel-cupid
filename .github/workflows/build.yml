@@ -30,20 +30,20 @@ jobs:
             g++-multilib gcc-multilib gperf git libelf-dev libssl-dev \
             libncurses-dev libncurses5 libtinfo5 lz4 lzop pahole python3 rsync unzip wget xz-utils zip zstd
 
-      - name: Cache LLVM 18
+      - name: Cache GKI clang r510928
         id: llvm-cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/clang
-          key: llvm-18.1.8-x86_64-v2
+          key: clang-r510928-gki-android15-6.6
 
-      - name: Download LLVM 18
+      - name: Download GKI clang r510928
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/clang"
-          curl -fL -o "$RUNNER_TEMP/clang.tar.xz" \
-            https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
-          tar -xJf "$RUNNER_TEMP/clang.tar.xz" -C "$RUNNER_TEMP/clang" --strip-components=1
+          curl -fL -o "$RUNNER_TEMP/clang.tar.gz" \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-15.0.0_r1/clang-r510928.tar.gz"
+          tar -xzf "$RUNNER_TEMP/clang.tar.gz" -C "$RUNNER_TEMP/clang"
 
       - name: Show toolchain
         run: |
@@ -53,20 +53,28 @@ jobs:
       - name: Configure kernel
         run: |
           make O=out ARCH=arm64 LLVM=1 gki_defconfig
-          ./scripts/config --file out/.config -e KSU -d KSU_DEBUG -d KSU_SUSFS
+          ./scripts/config --file out/.config \
+            -e KSU -d KSU_DEBUG -d KSU_SUSFS \
+            -e LTO_CLANG -e LTO_CLANG_THIN -d LTO_NONE
           make O=out ARCH=arm64 LLVM=1 olddefconfig
           ./scripts/config --file out/.config -d KSU_SUSFS
           make O=out ARCH=arm64 LLVM=1 olddefconfig
-          grep -E '^CONFIG_(KSU|LTO|CFI_CLANG)' out/.config || true
+          grep -E '^CONFIG_(KSU|LTO|CFI_CLANG|MODVERSIONS|LOCALVERSION|PREEMPT|MODULE_SIG)' out/.config || true
           if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
             echo "SUSFS still enabled, but kernel-side susfs patches are missing"; exit 1
           fi
           grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU not enabled"; exit 1; }
+          grep -q '^CONFIG_LTO_CLANG_THIN=y' out/.config || { echo "thin LTO not enabled"; exit 1; }
+          if grep -q '^CONFIG_LTO_NONE=y' out/.config; then echo "LTO_NONE still set"; exit 1; fi
 
       - name: Build Image
         run: |
-          make O=out ARCH=arm64 LLVM=1 -j"$(nproc)" Image
-          ls -lh out/arch/arm64/boot/Image out/vmlinux
+          make O=out ARCH=arm64 LLVM=1 KCFLAGS="-D__ANDROID_COMMON_KERNEL__" -j"$(nproc)" Image
+          ls -lh out/arch/arm64/boot/Image out/vmlinux out/Module.symvers
+          echo "kernelrelease=$(cat out/include/config/kernel.release)"
+          echo "vermagic=$(cat out/include/generated/utsrelease.h)"
+          grep -c '^0x' out/Module.symvers | sed 's/^/exported_syms=/'
+          sha256sum out/arch/arm64/boot/Image
 
       - name: Package flashable zip (AnyKernel3)
         run: |
