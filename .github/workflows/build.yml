@@ -16,7 +16,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
+    timeout-minutes: 300
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,68 +30,108 @@ jobs:
             g++-multilib gcc-multilib gperf git libelf-dev libssl-dev \
             libncurses-dev libncurses5 libtinfo5 lz4 lzop pahole python3 rsync unzip wget xz-utils zip zstd
 
-      - name: Cache GKI clang r510928
-        id: llvm-cache
+      - name: Setup swap (full LTO needs RAM)
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 16
+
+      - name: Cache clang r596125
+        id: clang-cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/clang
-          key: clang-r510928-gki-android15-6.6
+          key: clang-r596125-android17
 
-      - name: Download GKI clang r510928
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+      - name: Download clang r596125
+        if: steps.clang-cache.outputs.cache-hit != 'true'
         run: |
-          mkdir -p "$RUNNER_TEMP/clang"
-          curl -fL -o "$RUNNER_TEMP/clang.tar.gz" \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-15.0.0_r1/clang-r510928.tar.gz"
-          tar -xzf "$RUNNER_TEMP/clang.tar.gz" -C "$RUNNER_TEMP/clang"
+          mkdir -p "${RUNNER_TEMP}/clang"
+          git clone --filter=blob:none --no-checkout --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "${RUNNER_TEMP}/repo"
+          git -C "${RUNNER_TEMP}/repo" sparse-checkout set clang-r596125
+          git -C "${RUNNER_TEMP}/repo" checkout -q
+          mv "${RUNNER_TEMP}/repo/clang-r596125"/* "${RUNNER_TEMP}/clang/"
+          rm -rf "${RUNNER_TEMP}/repo"
 
       - name: Show toolchain
         run: |
-          echo "$RUNNER_TEMP/clang/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/clang/bin/clang" --version
+          echo "${RUNNER_TEMP}/clang/bin" >> "$GITHUB_PATH"
+          "${RUNNER_TEMP}/clang/bin/clang" --version
+          "${RUNNER_TEMP}/clang/bin/ld.lld" --version
 
       - name: Configure kernel
         run: |
-          make O=out ARCH=arm64 LLVM=1 gki_defconfig
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
           ./scripts/config --file out/.config \
             -e KSU -d KSU_DEBUG -d KSU_SUSFS \
-            -e LTO_CLANG -e LTO_CLANG_THIN -d LTO_NONE \
+            -e LTO_CLANG_FULL -d LTO_CLANG_THIN -d LTO_NONE \
+            -d PAGE_OWNER -d DEBUG_FS \
             -e DEBUG_INFO_COMPRESSED_NONE -d DEBUG_INFO_COMPRESSED_ZSTD
           make O=out ARCH=arm64 LLVM=1 olddefconfig
           ./scripts/config --file out/.config -d KSU_SUSFS
           make O=out ARCH=arm64 LLVM=1 olddefconfig
-          grep -E '^CONFIG_(KSU|LTO|CFI_CLANG|MODVERSIONS|LOCALVERSION|PREEMPT|MODULE_SIG|DEBUG_INFO)' out/.config || true
+          grep -E '^#? ?CONFIG_(KSU|LTO|CFI_CLANG|MODVERSIONS|LOCALVERSION|PREEMPT|MODULE_SIG|DEBUG_INFO|PAGE_OWNER|DEBUG_FS)' out/.config || true
+          grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU not enabled"; exit 1; }
+          grep -q '^CONFIG_LTO_CLANG_FULL=y' out/.config || { echo "full LTO not enabled"; exit 1; }
+          if grep -q '^CONFIG_LTO_CLANG_THIN=y' out/.config; then echo "thin LTO still set"; exit 1; fi
+          if grep -q '^CONFIG_PAGE_OWNER=y' out/.config; then echo "PAGE_OWNER still set"; exit 1; fi
+          if grep -q '^CONFIG_DEBUG_FS=y' out/.config; then echo "DEBUG_FS still set"; exit 1; fi
+          if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then echo "SUSFS still enabled"; exit 1; fi
           if grep -q '^CONFIG_DEBUG_INFO_COMPRESSED_ZSTD=y' out/.config; then
             echo "zstd-compressed DWARF breaks pahole 1.25 (elfutils 0.186 < 0.189)"; exit 1
           fi
-          if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
-            echo "SUSFS still enabled, but kernel-side susfs patches are missing"; exit 1
-          fi
-          grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU not enabled"; exit 1; }
-          grep -q '^CONFIG_LTO_CLANG_THIN=y' out/.config || { echo "thin LTO not enabled"; exit 1; }
-          if grep -q '^CONFIG_LTO_NONE=y' out/.config; then echo "LTO_NONE still set"; exit 1; fi
 
       - name: Build Image
         run: |
-          make O=out ARCH=arm64 LLVM=1 KCFLAGS="-D__ANDROID_COMMON_KERNEL__" -j"$(nproc)" Image
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 KCFLAGS="-D__ANDROID_COMMON_KERNEL__" -j"$(nproc)" Image
           ls -lh out/arch/arm64/boot/Image out/vmlinux out/vmlinux.symvers
           echo "kernelrelease=$(cat out/include/config/kernel.release)"
           echo "vermagic=$(cat out/include/generated/utsrelease.h)"
           grep -c '^0x' out/vmlinux.symvers | sed 's/^/exported_syms=/'
           sha256sum out/arch/arm64/boot/Image
 
-      - name: Package flashable zip (AnyKernel3)
+      - name: Package flashable zip (AnyKernel3, cupid GKI)
         run: |
           SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
           ZIP_NAME="Glade-Kernel-cupid-6.6-KSU-${SHORT_SHA}.zip"
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
           rm -rf ak3/.git ak3/.github ak3/README.md
           cp out/arch/arm64/boot/Image ak3/Image
-          sed -i 's/^kernel.string=.*/kernel.string=Glade Kernel 6.6 (GKI) + KernelSU-Next/' ak3/anykernel.sh
-          sed -i 's/^do.devicecheck=1/do.devicecheck=0/' ak3/anykernel.sh
-          sed -i 's|^BLOCK=.*|BLOCK=boot;|' ak3/anykernel.sh
-          sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=auto;|' ak3/anykernel.sh
-          grep -nE '^(BLOCK|IS_SLOT_DEVICE|do\.)' ak3/anykernel.sh
+          cat > ak3/anykernel.sh <<'AK'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
+
+          ### AnyKernel setup
+          properties() { '
+          kernel.string=Glade Kernel 6.6 (GKI) + KernelSU-Next
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=cupid
+          device.name2=2201123G
+          device.name3=2201123C
+          device.name4=2201123E
+          device.name5=
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; } # end properties
+
+          ### AnyKernel install
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          . tools/ak3-core.sh;
+
+          split_boot;
+          flash_boot;
+          ## end boot install
+          AK
+          grep -nE '^(BLOCK|IS_SLOT_DEVICE|do\.|device\.name)' ak3/anykernel.sh
           (cd ak3 && zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . -x '*.git*')
           echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
           ls -lh "$ZIP_NAME"
