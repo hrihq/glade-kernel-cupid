@@ -1,13 +1,10 @@
-name: Build Kernel (GKI 6.6 + KSU Next)
+name: Build Glade Kernel (cupid 5.10 + KSU Next)
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - 'drivers/kernelsu/**'
-      - 'drivers/Kconfig'
-      - 'drivers/Makefile'
       - '.github/workflows/**'
 
 permissions:
@@ -28,12 +25,27 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq bc bison build-essential cpio curl flex \
             g++-multilib gcc-multilib gperf git libelf-dev libssl-dev \
-            libncurses-dev libncurses5 libtinfo5 lz4 lzop pahole python3 rsync unzip wget xz-utils zip zstd
+            libncurses-dev libncurses5 libtinfo5 lz4 lzop python3 rsync unzip wget xz-utils zip zstd
 
       - name: Setup swap (full LTO needs RAM)
         uses: pierotofy/set-swap-space@master
         with:
           swap-size-gb: 16
+
+      - name: Clone kernel source (LineageOS sm8450, Linux 5.10 GKI)
+        run: |
+          git clone --depth=1 --branch lineage-24.0 https://github.com/LineageOS/android_kernel_xiaomi_sm8450 kernel-source
+          cd kernel-source
+          echo "kernel commit: $(git rev-parse HEAD)"
+          head -4 Makefile | tr '\n' ' '; echo
+
+      - name: Fetch device config (1:1 ROM binary)
+        run: |
+          curl -fL -o /tmp/glade_cupid_defconfig \
+            https://raw.githubusercontent.com/hrihq/carbon-kernel-cupid/main/arch/arm64/configs/carbon_cupid_defconfig
+          cp /tmp/glade_cupid_defconfig kernel-source/arch/arm64/configs/glade_cupid_defconfig
+          wc -l kernel-source/arch/arm64/configs/glade_cupid_defconfig
+          grep -nE 'CONFIG_(LTO_CLANG_FULL|PAGE_OWNER|DEBUG_FS|CFI_CLANG|MODVERSIONS|DEBUG_INFO_BTF|MODULE_SIG)' kernel-source/arch/arm64/configs/glade_cupid_defconfig
 
       - name: Cache clang r596125
         id: clang-cache
@@ -59,51 +71,57 @@ jobs:
           "${RUNNER_TEMP}/clang/bin/clang" --version
           "${RUNNER_TEMP}/clang/bin/ld.lld" --version
 
+      - name: Integrate KernelSU-Next
+        run: |
+          cd kernel-source
+          git clone --depth=1 --branch dev-susfs https://github.com/pershoot/KernelSU-Next.git KernelSU-Next
+          cd drivers
+          ln -sf ../KernelSU-Next/kernel kernelsu
+          grep -q kernelsu Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> Makefile
+          grep -q 'drivers/kernelsu/Kconfig' Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' Kconfig
+          echo "KernelSU-Next integrated"
+
       - name: Configure kernel
         run: |
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
-          ./scripts/config --file out/.config \
-            -e KSU -d KSU_DEBUG -d KSU_SUSFS \
-            -e LTO_CLANG_FULL -d LTO_CLANG_THIN -d LTO_NONE \
-            -d PAGE_OWNER -d PAGE_PINNER -d DEBUG_FS \
-            -e DEBUG_INFO_COMPRESSED_NONE -d DEBUG_INFO_COMPRESSED_ZSTD
-          make O=out ARCH=arm64 LLVM=1 olddefconfig
-          ./scripts/config --file out/.config -d KSU_SUSFS
-          make O=out ARCH=arm64 LLVM=1 olddefconfig
-          grep -E '^#? ?CONFIG_(KSU|LTO|CFI_CLANG|MODVERSIONS|LOCALVERSION|PREEMPT|MODULE_SIG|DEBUG_INFO|PAGE_OWNER|DEBUG_FS)' out/.config || true
+          cd kernel-source
+          export PATH="${CLANG_PATH}/bin:${PATH}"
+          export LLVM=1 LLVM_IAS=1
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 glade_cupid_defconfig
+          ./scripts/config --file out/.config -e KSU -d KSU_DEBUG -d KSU_SUSFS
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+          grep -E '^#? ?CONFIG_(KSU|LTO_CLANG_FULL|LTO_CLANG_THIN|CFI_CLANG|MODVERSIONS|PAGE_OWNER|DEBUG_FS|DEBUG_INFO_BTF|MODULE_SIG|LOCALVERSION)' out/.config || true
           grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU not enabled"; exit 1; }
           grep -q '^CONFIG_LTO_CLANG_FULL=y' out/.config || { echo "full LTO not enabled"; exit 1; }
-          if grep -q '^CONFIG_LTO_CLANG_THIN=y' out/.config; then echo "thin LTO still set"; exit 1; fi
-          if grep -q '^CONFIG_PAGE_OWNER=y' out/.config; then echo "PAGE_OWNER still set"; exit 1; fi
-          if grep -q '^CONFIG_DEBUG_FS=y' out/.config; then echo "DEBUG_FS still set"; exit 1; fi
-          if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then echo "SUSFS still enabled"; exit 1; fi
-          if grep -q '^CONFIG_DEBUG_INFO_COMPRESSED_ZSTD=y' out/.config; then
-            echo "zstd-compressed DWARF breaks pahole 1.25 (elfutils 0.186 < 0.189)"; exit 1
-          fi
+          if grep -q '^CONFIG_LTO_CLANG_THIN=y' out/.config; then echo "thin LTO set"; exit 1; fi
+          if grep -q '^CONFIG_PAGE_OWNER=y' out/.config; then echo "PAGE_OWNER set"; exit 1; fi
+          if grep -q '^CONFIG_DEBUG_FS=y' out/.config; then echo "DEBUG_FS set"; exit 1; fi
 
       - name: Build Image
         run: |
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 KCFLAGS="-D__ANDROID_COMMON_KERNEL__" -j"$(nproc)" Image
-          ls -lh out/arch/arm64/boot/Image out/vmlinux out/vmlinux.symvers
+          cd kernel-source
+          export PATH="${CLANG_PATH}/bin:${PATH}"
+          export ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld
+          make -j2 O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image
+          ls -lh out/arch/arm64/boot/Image out/vmlinux out/Module.symvers
           echo "kernelrelease=$(cat out/include/config/kernel.release)"
           echo "vermagic=$(cat out/include/generated/utsrelease.h)"
-          grep -c '^0x' out/vmlinux.symvers | sed 's/^/exported_syms=/'
+          grep -c '^0x' out/Module.symvers | sed 's/^/exported_syms=/'
           sha256sum out/arch/arm64/boot/Image
 
-      - name: Package flashable zip (AnyKernel3, cupid GKI)
+      - name: Package flashable zip (AnyKernel3, cupid)
         run: |
           SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
-          ZIP_NAME="Glade-Kernel-cupid-6.6-KSU-${SHORT_SHA}.zip"
+          ZIP_NAME="Glade-Kernel-cupid-5.10-KSU-${SHORT_SHA}.zip"
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
           rm -rf ak3/.git ak3/.github ak3/README.md
-          cp out/arch/arm64/boot/Image ak3/Image
+          cp kernel-source/out/arch/arm64/boot/Image ak3/Image
           cat > ak3/anykernel.sh <<'AK'
           ### AnyKernel3 Ramdisk Mod Script
           ## osm0sis @ xda-developers
 
           ### AnyKernel setup
           properties() { '
-          kernel.string=Glade Kernel 6.6 (GKI) + KernelSU-Next
+          kernel.string=Glade Kernel 5.10 (GKI) + KernelSU-Next
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -142,5 +160,5 @@ jobs:
           name: ${{ env.ZIP_NAME }}
           path: |
             ${{ env.ZIP_NAME }}
-            out/arch/arm64/boot/Image
-            out/.config
+            kernel-source/out/arch/arm64/boot/Image
+            kernel-source/out/.config
