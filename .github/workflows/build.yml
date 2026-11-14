@@ -65,7 +65,7 @@ jobs:
           ./scripts/config --file out/.config \
             -e KSU -d KSU_DEBUG -d KSU_SUSFS \
             -e LTO_CLANG_FULL -d LTO_CLANG_THIN -d LTO_NONE \
-            -d PAGE_OWNER -d DEBUG_FS \
+            -d PAGE_OWNER -d PAGE_PINNER -d DEBUG_FS \
             -e DEBUG_INFO_COMPRESSED_NONE -d DEBUG_INFO_COMPRESSED_ZSTD
           make O=out ARCH=arm64 LLVM=1 olddefconfig
           ./scripts/config --file out/.config -d KSU_SUSFS
