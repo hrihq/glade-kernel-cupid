@@ -79,6 +79,7 @@ jobs:
             arch/arm64/configs/vendor/waipio_perf.config
           ./scripts/config --file out/.config \
             -e KSU -d KSU_DEBUG -d KSU_SUSFS \
+            -e LTO_CLANG_THIN -d LTO_NONE \
             -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES \
             -e DEBUG_INFO_COMPRESSED_NONE -d DEBUG_INFO_COMPRESSED_ZSTD \
             --set-str LOCALVERSION "-Glade-cupid"
