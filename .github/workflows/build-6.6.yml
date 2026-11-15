@@ -79,7 +79,7 @@ jobs:
             arch/arm64/configs/vendor/waipio_perf.config
           ./scripts/config --file out/.config \
             -e KSU -d KSU_DEBUG -d KSU_SUSFS \
-            -e LTO_CLANG_THIN -d LTO_NONE \
+            -d LTO_CLANG_THIN -d LTO_CLANG_FULL -e LTO_NONE \
             -d KVM \
             -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES \
             -e DEBUG_INFO_COMPRESSED_NONE -d DEBUG_INFO_COMPRESSED_ZSTD \
@@ -88,7 +88,7 @@ jobs:
           grep -E '^#? ?CONFIG_(KSU|LTO|CFI_CLANG|MODVERSIONS|ARCH_WAIPIO|ARCH_CAPE|PAGE_OWNER|DEBUG_FS|DEBUG_INFO_BTF|LOCALVERSION)' out/.config || true
           grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU not enabled"; exit 1; }
           grep -q '^CONFIG_ARCH_WAIPIO=y' out/.config || { echo "waipio fragment not applied"; exit 1; }
-          grep -q '^CONFIG_LTO_CLANG_THIN=y' out/.config || { echo "thin LTO not enabled"; exit 1; }
+          grep -q '^CONFIG_LTO_NONE=y' out/.config || { echo "LTO_NONE not set"; exit 1; }
           if grep -q '^CONFIG_DEBUG_INFO_BTF=y' out/.config; then echo "BTF still set"; exit 1; fi
 
       - name: Build Image
