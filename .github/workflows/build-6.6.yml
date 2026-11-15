@@ -1,0 +1,157 @@
+name: Build Glade Kernel (cupid 6.6 + KSU Next)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison build-essential cpio curl flex \
+            g++-multilib gcc-multilib gperf git libelf-dev libssl-dev \
+            libncurses-dev libncurses5 libtinfo5 lz4 lzop pahole python3 rsync unzip wget xz-utils zip zstd
+
+      - name: Clone kernel source (cupid-development sm8450 6.6)
+        run: |
+          git clone --depth=1 --branch lineage-24.0-6.6 https://github.com/cupid-development/android_kernel_xiaomi_sm8450-6.6 kernel-source
+          cd kernel-source
+          echo "kernel commit: $(git rev-parse HEAD)"
+          head -4 Makefile | tr '\n' ' '; echo
+          ls arch/arm64/configs/vendor/ | grep -E 'waipio_perf|gki' | tr '\n' ' '; echo
+
+      - name: Cache clang r510928
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/clang
+          key: clang-r510928-gki-android15-6.6
+
+      - name: Download clang r510928
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${RUNNER_TEMP}/clang"
+          git clone --filter=blob:none --no-checkout --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "${RUNNER_TEMP}/repo"
+          git -C "${RUNNER_TEMP}/repo" sparse-checkout set clang-r510928
+          git -C "${RUNNER_TEMP}/repo" checkout -q
+          mv "${RUNNER_TEMP}/repo/clang-r510928"/* "${RUNNER_TEMP}/clang/"
+          rm -rf "${RUNNER_TEMP}/repo"
+
+      - name: Show toolchain
+        run: |
+          echo "${RUNNER_TEMP}/clang/bin" >> "$GITHUB_PATH"
+          "${RUNNER_TEMP}/clang/bin/clang" --version
+          "${RUNNER_TEMP}/clang/bin/ld.lld" --version
+
+      - name: Integrate KernelSU-Next
+        run: |
+          cd kernel-source
+          git clone --depth=1 --branch dev-susfs https://github.com/pershoot/KernelSU-Next.git KernelSU-Next
+          cd drivers
+          ln -sf ../KernelSU-Next/kernel kernelsu
+          grep -q kernelsu Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> Makefile
+          grep -q 'drivers/kernelsu/Kconfig' Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' Kconfig
+          echo "KernelSU-Next integrated"
+
+      - name: Configure kernel (gki_defconfig + waipio_perf)
+        run: |
+          cd kernel-source
+          export PATH="${CLANG_PATH}/bin:${PATH}"
+          export LLVM=1 LLVM_IAS=1
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
+          ./scripts/kconfig/merge_config.sh -O out -m out/.config \
+            arch/arm64/configs/vendor/waipio_perf.config
+          ./scripts/config --file out/.config \
+            -e KSU -d KSU_DEBUG -d KSU_SUSFS \
+            -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES \
+            -e DEBUG_INFO_COMPRESSED_NONE -d DEBUG_INFO_COMPRESSED_ZSTD \
+            --set-str LOCALVERSION "-Glade-cupid"
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+          grep -E '^#? ?CONFIG_(KSU|LTO|CFI_CLANG|MODVERSIONS|ARCH_WAIPIO|ARCH_CAPE|PAGE_OWNER|DEBUG_FS|DEBUG_INFO_BTF|LOCALVERSION)' out/.config || true
+          grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU not enabled"; exit 1; }
+          grep -q '^CONFIG_ARCH_WAIPIO=y' out/.config || { echo "waipio fragment not applied"; exit 1; }
+          grep -q '^CONFIG_LTO_CLANG_THIN=y' out/.config || { echo "thin LTO not enabled"; exit 1; }
+          if grep -q '^CONFIG_DEBUG_INFO_BTF=y' out/.config; then echo "BTF still set"; exit 1; fi
+
+      - name: Build Image
+        run: |
+          cd kernel-source
+          export PATH="${CLANG_PATH}/bin:${PATH}"
+          export ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld
+          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 KCFLAGS="-D__ANDROID_COMMON_KERNEL__" Image
+          ls -lh out/arch/arm64/boot/Image out/vmlinux out/vmlinux.symvers
+          echo "kernelrelease=$(cat out/include/config/kernel.release)"
+          echo "vermagic=$(cat out/include/generated/utsrelease.h)"
+          grep -c '^0x' out/vmlinux.symvers | sed 's/^/exported_syms=/'
+          sha256sum out/arch/arm64/boot/Image
+
+      - name: Package flashable zip (AnyKernel3, cupid)
+        run: |
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          ZIP_NAME="Glade-Kernel-cupid-6.6-KSU-${SHORT_SHA}.zip"
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
+          rm -rf ak3/.git ak3/.github ak3/README.md
+          cp kernel-source/out/arch/arm64/boot/Image ak3/Image
+          cat > ak3/anykernel.sh <<'AK'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
+
+          ### AnyKernel setup
+          properties() { '
+          kernel.string=Glade Kernel 6.6 (GKI) + KernelSU-Next
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=cupid
+          device.name2=2201123G
+          device.name3=2201123C
+          device.name4=2201123E
+          device.name5=
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; } # end properties
+
+          ### AnyKernel install
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          . tools/ak3-core.sh;
+
+          split_boot;
+          flash_boot;
+          ## end boot install
+          AK
+          grep -nE '^(BLOCK|IS_SLOT_DEVICE|do\.|device\.name)' ak3/anykernel.sh
+          (cd ak3 && zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . -x '*.git*')
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          ls -lh "$ZIP_NAME"
+
+      - name: Upload flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: |
+            ${{ env.ZIP_NAME }}
+            kernel-source/out/arch/arm64/boot/Image
+            kernel-source/out/.config
