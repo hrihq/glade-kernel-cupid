@@ -84,7 +84,7 @@ jobs:
             -d PAGE_OWNER -d PAGE_PINNER -d DEBUG_FS \
             -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES \
             -e DEBUG_INFO_COMPRESSED_NONE -d DEBUG_INFO_COMPRESSED_ZSTD \
-            --set-str LOCALVERSION "-Glade-cupid"
+            --set-str LOCALVERSION "-android15-8-g6c93f14f14f5-dirty-4k" -d LOCALVERSION_AUTO
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
           grep -E '^#? ?CONFIG_(KSU|LTO|CFI_CLANG|MODVERSIONS|ARCH_WAIPIO|ARCH_CAPE|PAGE_OWNER|DEBUG_FS|DEBUG_INFO_BTF|LOCALVERSION)' out/.config || true
           grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU not enabled"; exit 1; }
