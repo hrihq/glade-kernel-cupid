@@ -99,7 +99,7 @@ jobs:
           cd kernel-source
           export PATH="${CLANG_PATH}/bin:${PATH}"
           export ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld
-          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 KCFLAGS="-D__ANDROID_COMMON_KERNEL__" Image
+          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 KCFLAGS="-D__ANDROID_COMMON_KERNEL__" LOCALVERSION= Image
           ls -lh out/arch/arm64/boot/Image out/vmlinux out/vmlinux.symvers
           echo "kernelrelease=$(cat out/include/config/kernel.release)"
           echo "vermagic=$(cat out/include/generated/utsrelease.h)"
